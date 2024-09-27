@@ -665,6 +665,7 @@ RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader& ch)
     }
     if (ch.l3Prot == 0xFD)
     { // NACK
+         printf("n ack rate: %lu\n",qp->m_rate.GetBitRate());
         RecoverQueue(qp);
     }
 
@@ -676,7 +677,7 @@ RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader& ch)
             cnp_received_mlx(qp);
         }
     }
-
+    
     switch (m_cc_mode)
     {
     case CC_MODE::HPCC:
@@ -741,7 +742,21 @@ RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size) co
     uint32_t expected = q->ReceiverNextExpectedSeq;
     if (seq == expected)
     {
+        //printf("seq : %u\n",seq);
         q->ReceiverNextExpectedSeq = expected + size;
+        if(q->test.state == 1)
+        {
+            q->test.state = 0;
+            std::cout << "last_seq: " << expected/1000;
+            std::cout << " Bitmap: ";
+            for (int bit : q->test.bitMap) {
+                std::cout << bit << " ";
+            }
+            std::cout << std::endl;
+
+            q->test.bitMap.resize(1,0);
+
+        }
         if (q->ReceiverNextExpectedSeq >= q->m_milestone_rx)
         {
             q->m_milestone_rx += m_ack_interval;
@@ -759,6 +774,28 @@ RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size) co
     else if (seq > expected)
     {
         // Generate NACK
+        printf("nack seq: %u expected: %u \n",seq, expected);
+        if (q->test.state != 1)
+        {
+            q->test.state = 1;
+            q->test.bitMap.resize(1,0);
+            
+        }
+        
+        if(q->test.state == 1)
+        {
+            if((seq - expected)/1000 + 1> q->test.bitMap.size())
+            {
+                q->test.bitMap.resize((seq - expected)/1000 + 1,0);
+            }
+            q->test.bitMap[(seq - expected)/1000] = 1;
+
+            std::cout << " Bitmap: ";
+            for (int bit : q->test.bitMap) {
+                std::cout << bit << " ";
+            }
+            std::cout << std::endl;
+        }
         if (Simulator::Now() >= q->m_nackTimer || q->m_lastNACK != expected)
         {
             q->m_nackTimer = Simulator::Now() + MicroSeconds(m_nack_interval);

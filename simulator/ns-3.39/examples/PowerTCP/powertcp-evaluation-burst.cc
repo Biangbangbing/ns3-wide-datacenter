@@ -268,6 +268,7 @@ qp_finish(FILE* fout, Ptr<RdmaQueuePair> q)
     Ptr<Node> dstNode = n.Get(did);
     Ptr<RdmaDriver> rdma = dstNode->GetObject<RdmaDriver>();
     rdma->m_rdma->DeleteRxQp(q->sip.Get(), q->m_pg, q->sport);
+    printf("finish\n");
 }
 
 void

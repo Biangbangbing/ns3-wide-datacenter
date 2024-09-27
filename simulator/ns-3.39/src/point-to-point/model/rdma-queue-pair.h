@@ -101,6 +101,8 @@ class RdmaQueuePair : public Object
         } hopState[IntHeader::maxHop];
     } power;
 
+
+
     struct
     {
         uint32_t m_lastUpdateSeq;
@@ -220,6 +222,8 @@ class RdmaQueuePair : public Object
 class RdmaRxQueuePair : public Object
 { // Rx side queue pair
   public:
+
+
     struct ECNAccount
     {
         uint16_t qIndex;
@@ -232,6 +236,17 @@ class RdmaRxQueuePair : public Object
             memset(this, 0, sizeof(ECNAccount));
         }
     };
+
+    struct
+    {
+        uint32_t last_nack;
+        uint32_t del_nack;
+        uint8_t state;
+        uint32_t high_ack;
+
+        std::vector<int> bitMap;
+
+    } test;
 
     ECNAccount m_ecn_source;
     uint32_t sip, dip;
