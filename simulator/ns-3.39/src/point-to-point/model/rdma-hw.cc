@@ -24,7 +24,7 @@
 #include <iostream>
 #include <ostream>
 #include <random>
-
+#include <vector>
 namespace ns3
 {
 
@@ -534,13 +534,11 @@ RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader& ch)
         seqh.SetSport(ch.udp.dport);
         seqh.SetDport(ch.udp.sport);
         seqh.SetIntHeader(ch.udp.ih); // ACK will preserve the INT header from the UDP
-        if (ecnbits)
-        {
+        if (ecnbits) {
             seqh.SetCnp();
         }
 
-        Ptr<Packet> newp =
-            Create<Packet>(std::max(60 - 14 - 20 - (int)seqh.GetSerializedSize(), 0));
+        Ptr<Packet> newp = Create<Packet>(std::max(60 - 14 - 20 - (int)seqh.GetSerializedSize(), 0));
         newp->AddHeader(seqh);
 
         Ipv4Header head; // Prepare IPv4 header
@@ -663,10 +661,42 @@ RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader& ch)
             QpComplete(qp);
         }
     }
-    if (ch.l3Prot == 0xFD)
+    if (ch.l3Prot == 0xFD) //如果收到sack包
     { // NACK
-         printf("n ack rate: %lu\n",qp->m_rate.GetBitRate());
-        RecoverQueue(qp);
+        //printf("n ack rate: %lu\n",qp->m_rate.GetBitRate());
+        //RecoverQueue(qp);
+        if (qp->test.recoveryState == 0) { //第一次乱序
+            qp->test.bitMap.resize(((seq - qp->snd_una) / m_mtu) + 1,0);
+            qp->test.bitMap[(seq - qp->snd_una) / m_mtu] = 1;
+            qp->test.targetRecoverySeq = qp->snd_nxt;
+            qp->snd_nxt = qp->snd_una;
+            qp->test.rightSeq =seq;
+            qp->test.recoveryState = 1;
+        } else { //不是第一次乱序
+            qp->test.bitMap.resize(((seq - qp->snd_una) / m_mtu) + 1,0);
+            qp->test.bitMap[(seq - qp->snd_una) / m_mtu] = 1;
+            qp->test.rightSeq = seq;
+            // 发送所有空隙包
+        }
+    } else if (ch.l3Prot == 0xFC) { //如果收到ack包
+         if (qp->test.recoveryState == 1) { //还处于乱序状态
+             std::vector<int>::iterator k = qp->test.bitMap.begin();
+            int index = 0;
+            for (int bit : qp->test.bitMap) {
+                if (bit == 0 && index !=0) {
+                    break;
+                } else {
+                    k++;
+                }
+                index++;
+            }
+            qp->test.bitMap.erase(qp->test.bitMap.begin(),k);
+            qp->snd_una += index * m_mtu;
+            if (qp->snd_una >= qp->test.targetRecoverySeq) { //所有乱序包都收到了
+                qp->test.recoveryState = 0;
+            }
+            qp->snd_nxt = qp->snd_una; //重发哪一个数据包待商榷，如何连续控制snd_nxt增长
+        } 
     }
 
     // handle cnp
@@ -705,6 +735,8 @@ RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader& ch)
     case CC_MODE::POWERQCN:
         HandleAckPowerQcn(qp, p, ch);
         break;
+    case CC_MODE::MLX_CNP:
+        break;
     default:
         NS_ABORT_MSG("Unknown CC mode");
         break;
@@ -739,56 +771,63 @@ RdmaHw::Receive(Ptr<Packet> p, CustomHeader& ch)
 int
 RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size) const
 {
+    // 判断状态+填充位图，更新nextseq，注意区分字节数和包
     uint32_t expected = q->ReceiverNextExpectedSeq;
-    if (seq == expected)
-    {
+    if (seq == expected) {
         //printf("seq : %u\n",seq);
         q->ReceiverNextExpectedSeq = expected + size;
-        if(q->test.state == 1)
-        {
-            q->test.state = 0;
-            std::cout << "last_seq: " << expected/1000;
+        if(q->test.recoveryState == 1) {//处于乱序状态，即将恢复reset
+            // q->test.recoveryState = 0;
+            std::cout << "last_seq: " << expected / m_mtu;
             std::cout << " Bitmap: ";
+            bool flag = false;
+            int index = 0;
+            std::vector<int>::iterator k = q->test.bitMap.begin();
             for (int bit : q->test.bitMap) {
                 std::cout << bit << " ";
+                if (index == 0) {
+                    k++;
+                } else if(bit == 1 && !flag) {
+                    k++;
+                } else if (bit == 0 && !flag) {
+                    flag = 1;
+                    q->ReceiverNextExpectedSeq += (index - 1) * m_mtu;
+                }
+                index++;
             }
             std::cout << std::endl;
-
-            q->test.bitMap.resize(1,0);
-
+            //q->test.bitMap.resize(1,0);
+            q->test.bitMap.erase(q->test.bitMap.begin(),k);
+            if (q->ReceiverNextExpectedSeq == q->test.sack_high) {
+                q->test.recoveryState = 0;
+            }                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
         }
-        if (q->ReceiverNextExpectedSeq >= q->m_milestone_rx)
-        {
+        if (q->ReceiverNextExpectedSeq >= q->m_milestone_rx) {
             q->m_milestone_rx += m_ack_interval;
             return 1; // Generate ACK
         }
-        else if (q->ReceiverNextExpectedSeq % m_chunk == 0)
-        {
+        else if (q->ReceiverNextExpectedSeq % m_chunk == 0) {
             return 1;
         }
-        else
-        {
+        else {
             return 5;
         }
     }
-    else if (seq > expected)
-    {
+    else if (seq > expected) {
         // Generate NACK
-        printf("nack seq: %u expected: %u \n",seq, expected);
-        if (q->test.state != 1)
-        {
-            q->test.state = 1;
-            q->test.bitMap.resize(1,0);
-            
+        if (q->test.sack_high < seq) {
+            q->test.sack_high = seq;
         }
-        
-        if(q->test.state == 1)
-        {
-            if((seq - expected)/1000 + 1> q->test.bitMap.size())
-            {
-                q->test.bitMap.resize((seq - expected)/1000 + 1,0);
+        printf("nack seq: %u expected: %u \n",seq, expected);
+        if (q->test.recoveryState != 1) {
+            q->test.recoveryState = 1;
+            q->test.bitMap.resize(1,0);
+        }
+        if (q->test.recoveryState == 1) {
+            if((seq - expected)/m_mtu + 1> q->test.bitMap.size()) { //否则前面空隙包重传包也丢失了
+                q->test.bitMap.resize((seq - expected)/m_mtu + 1,0);
             }
-            q->test.bitMap[(seq - expected)/1000] = 1;
+            q->test.bitMap[(seq - expected)/m_mtu] = 1; 
 
             std::cout << " Bitmap: ";
             for (int bit : q->test.bitMap) {
@@ -796,23 +835,19 @@ RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size) co
             }
             std::cout << std::endl;
         }
-        if (Simulator::Now() >= q->m_nackTimer || q->m_lastNACK != expected)
-        {
+        if (Simulator::Now() >= q->m_nackTimer || q->m_lastNACK != expected) {
             q->m_nackTimer = Simulator::Now() + MicroSeconds(m_nack_interval);
             q->m_lastNACK = expected;
-            if (m_backto0)
-            {
+            if (m_backto0) {
                 q->ReceiverNextExpectedSeq = q->ReceiverNextExpectedSeq / m_chunk * m_chunk;
             }
             return 2;
         }
-        else
-        {
+        else {
             return 4;
         }
     }
-    else
-    {
+    else {
         // Duplicate.
         return 3;
     }
@@ -960,7 +995,21 @@ RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp)
     p->AddHeader(ppp);
 
     // update state
-    qp->snd_nxt += payload_size;
+    // qp->snd_nxt += payload_size;
+    // update snd_nxt method
+    if (qp->test.recoveryState == 0 || qp->test.bitMap.size() == 0) {
+        qp->snd_nxt += payload_size;
+    } else {
+        int index = (qp->snd_nxt - qp->snd_una) / m_mtu;
+        int right = (qp->test.rightSeq - qp->snd_una) / m_mtu;
+        for (int i = index; i < right; i++) {
+            if (qp->test.bitMap[i] == 0) {
+                qp->snd_nxt = qp->snd_una + i * m_mtu;
+                break;
+            }
+        }
+    }
+
     qp->m_ipid++;
 
     // return

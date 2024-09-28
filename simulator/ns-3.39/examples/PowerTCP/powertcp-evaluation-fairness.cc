@@ -568,7 +568,7 @@ main(int argc, char* argv[])
 
     uint32_t algorithm = 3;
     uint32_t windowCheck = 1;
-    std::string confFile = "/home/vamsi/src/phd/codebase/ns3-datacenter/simulator/ns-3.39/examples/"
+    std::string confFile = "/home/bianying/wideRdma/code/ns3-wide-datacenter/simulator/ns-3.39/examples/"
                            "PowerTCP/config-fairness.txt";
 
     std::cout << confFile;

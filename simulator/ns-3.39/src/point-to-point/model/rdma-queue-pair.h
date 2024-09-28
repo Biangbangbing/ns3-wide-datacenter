@@ -161,6 +161,16 @@ class RdmaQueuePair : public Object
         uint64_t last_update;// last time we update prev_rtt
     } powerqcn;
 
+     struct
+    {
+        uint8_t recoveryState;
+        //uint32_t sack_high;
+        uint32_t targetRecoverySeq;
+        uint32_t rightSeq;
+        std::vector<int> bitMap;
+
+    } test;
+
     /***********
      * methods
      **********/
@@ -241,8 +251,8 @@ class RdmaRxQueuePair : public Object
     {
         uint32_t last_nack;
         uint32_t del_nack;
-        uint8_t state;
-        uint32_t high_ack;
+        uint8_t recoveryState;
+        uint32_t sack_high;
 
         std::vector<int> bitMap;
 

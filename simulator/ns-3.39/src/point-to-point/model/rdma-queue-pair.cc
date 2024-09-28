@@ -91,6 +91,9 @@ RdmaQueuePair::RdmaQueuePair(uint16_t pg,
 
     powerqcn.last_update = 0;
     powerqcn.prev_rtt = 0;
+
+    test.recoveryState = 0;
+    // test.bitMap
 }
 
 void
@@ -271,6 +274,8 @@ RdmaRxQueuePair::RdmaRxQueuePair()
     m_nackTimer = Time(0);
     m_milestone_rx = 0;
     m_lastNACK = 0;
+
+    test.recoveryState = 0;
 }
 
 uint32_t
