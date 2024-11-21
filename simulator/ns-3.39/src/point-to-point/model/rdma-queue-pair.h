@@ -166,8 +166,11 @@ class RdmaQueuePair : public Object
         uint8_t recoveryState;
         //uint32_t sack_high;
         uint32_t targetRecoverySeq;
+        uint32_t recoveryTag;
         uint32_t rightSeq;
         std::vector<int> bitMap;
+        Time last_updateTime;
+        double last_updateInterval;
 
     } test;
 
@@ -200,6 +203,9 @@ class RdmaQueuePair : public Object
     // Returns the amount of data left to send, which can be used to determine if the transfer is
     // complete.
     uint64_t GetBytesLeft() const;
+
+    //
+    bool ShouldSendPacketForSR() const;
     // Generates a hash value based on the queue pair's source and destination IP addresses and
     // ports,
     // likely used for efficiently looking up queue pairs.

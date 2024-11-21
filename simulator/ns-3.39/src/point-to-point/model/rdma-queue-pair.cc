@@ -93,6 +93,10 @@ RdmaQueuePair::RdmaQueuePair(uint16_t pg,
     powerqcn.prev_rtt = 0;
 
     test.recoveryState = 0;
+    test.rightSeq = 0;
+    test.recoveryTag = 0;
+    test.targetRecoverySeq = 0;
+    test.last_updateInterval = m_baseRtt;
     // test.bitMap
 }
 
@@ -129,7 +133,16 @@ RdmaQueuePair::SetAppNotifyCallback(Callback<void> notifyAppFinish)
 uint64_t
 RdmaQueuePair::GetBytesLeft() const
 {
-    return m_size >= snd_nxt ? m_size - snd_nxt : 0;
+    return m_size >= snd_nxt ? m_size - snd_nxt: 0;
+}
+
+bool
+RdmaQueuePair::ShouldSendPacketForSR() const
+{
+    if (GetBytesLeft() == 0 && test.recoveryState == 0)
+        return false;
+    else
+        return true;
 }
 
 uint32_t

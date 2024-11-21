@@ -242,6 +242,12 @@ class RdmaHw : public Object
      ********************/
     double powerqcn_grad_min, powerqcn_grad_max; // similar to rtt_qcn_tmin, rtt_qcn_tmax
     void HandleAckPowerQcn(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader& ch);
+
+    /*********************
+     * SR
+     ********************/
+    void updateSendNxt(Ptr<RdmaQueuePair> qp,uint64_t payload_size);
+    void HandleAckForSR(Ptr<RdmaQueuePair> qp,uint32_t seq,CustomHeader& ch);
 };
 
 enum CC_MODE

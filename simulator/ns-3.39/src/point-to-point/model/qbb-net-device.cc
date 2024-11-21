@@ -191,7 +191,7 @@ RdmaEgressQueue::GetNextQindex(bool paused[])
             {
                 uint32_t idx = (qIndex + m_rrlast) % fcount; // start from where we left last time
                 Ptr<RdmaQueuePair> qp = m_qpGrp->Get(idx);
-                if (!paused[qp->m_pg] && qp->GetBytesLeft() > 0 && !qp->IsWinBound())
+                if (!paused[qp->m_pg] && qp->GetBytesLeft() > 0 && !qp->IsWinBound()) // && qp->ShouldSendPacketForSR()
                 { // not paused, not empty, not win bound
                     if (m_qpGrp->Get(idx)->m_nextAvail.GetTimeStep() >
                         Simulator::Now().GetTimeStep())
