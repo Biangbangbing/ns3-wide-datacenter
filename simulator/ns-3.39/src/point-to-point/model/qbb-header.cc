@@ -20,7 +20,8 @@ qbbHeader::qbbHeader(uint16_t pg)
       dport(0),
       flags(0),
       m_pg(pg),
-      m_seq(0)
+      m_seq(0),
+      m_epsn(0)
 {
 }
 
@@ -29,7 +30,8 @@ qbbHeader::qbbHeader()
       dport(0),
       flags(0),
       m_pg(0),
-      m_seq(0)
+      m_seq(0),
+      m_epsn(0)
 {
 }
 
@@ -47,6 +49,12 @@ void
 qbbHeader::SetSeq(uint32_t seq)
 {
     m_seq = seq;
+}
+
+void
+qbbHeader::SetEpsn(uint32_t epsn)
+{
+    m_epsn = epsn;
 }
 
 void
@@ -107,6 +115,12 @@ qbbHeader::GetSeq() const
     return m_seq;
 }
 
+uint32_t
+qbbHeader::GetEpsn() const
+{
+    return m_epsn;
+}
+
 uint16_t
 qbbHeader::GetSport() const
 {
@@ -163,7 +177,7 @@ qbbHeader::GetBaseSize()
 {
     qbbHeader tmp;
     return sizeof(tmp.sport) + sizeof(tmp.dport) + sizeof(tmp.flags) + sizeof(tmp.m_pg) +
-           sizeof(tmp.m_seq);
+           sizeof(tmp.m_seq) + sizeof(tmp.m_epsn);
 }
 
 void
@@ -175,6 +189,7 @@ qbbHeader::Serialize(Buffer::Iterator start) const
     i.WriteU16(flags);
     i.WriteU16(m_pg);
     i.WriteU32(m_seq);
+    i.WriteU32(m_epsn);
 
     // write IntHeader
     ih.Serialize(i);
@@ -189,6 +204,7 @@ qbbHeader::Deserialize(Buffer::Iterator start)
     flags = i.ReadU16();
     m_pg = i.ReadU16();
     m_seq = i.ReadU32();
+    m_epsn = i.ReadU32();
 
     // read IntHeader
     ih.Deserialize(i);

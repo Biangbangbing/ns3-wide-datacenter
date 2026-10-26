@@ -98,6 +98,21 @@ RdmaQueuePair::RdmaQueuePair(uint16_t pg,
     test.targetRecoverySeq = 0;
     test.last_updateInterval = m_baseRtt;
     // test.bitMap
+
+    // Selective Retransmission (sender-side) state
+    sr.SendOutOfOrder = false;
+    sr.sackHigh = 0;
+    sr.soft_eACK = 0;
+    sr.sendLeft = 0;
+    sr.sendRight = 0;
+    sr.swPending = false;
+    sr.swDeadlineNs = 0;
+    sr.hwAnchor = 0;
+    sr.sackedBytes = 0;
+    sr.lastAckTime = Simulator::Now();
+    sr.lastFastRetransPsn = 0xFFFFFFFFu;
+    sr.lastFastRetransTime = Time(0);
+    // hwBitMap is allocated lazily once K is known
 }
 
 void
@@ -145,6 +160,12 @@ RdmaQueuePair::ShouldSendPacketForSR() const
         return true;
 }
 
+bool
+RdmaQueuePair::HasRetransPending() const
+{
+    return !sr.retransQueue.empty();
+}
+
 uint32_t
 RdmaQueuePair::GetHash(void) const
 {
@@ -184,7 +205,20 @@ bool
 RdmaQueuePair::IsWinBound() const
 {
     uint64_t w = GetWin();
-    return w != 0 && GetOnTheFly() >= w;
+    if (w == 0)
+    {
+        return false;
+    }
+    uint64_t inFlight = GetOnTheFly();
+    if (sr.sackedBytes <= inFlight)
+    {
+        inFlight -= sr.sackedBytes;
+    }
+    else
+    {
+        inFlight = 0;
+    }
+    return inFlight >= w;
 }
 
 void
@@ -289,6 +323,18 @@ RdmaRxQueuePair::RdmaRxQueuePair()
     m_lastNACK = 0;
 
     test.recoveryState = 0;
+
+    // Selective Retransmission (receiver-side) state
+    sr.ReceiveOutOfOrder = false;
+    sr.receiveHigh = 0;
+    sr.soft_ePSN = 0;
+    sr.recvLeft = 0;
+    sr.recvRight = 0;
+    sr.swPending = false;
+    sr.swDeadlineNs = 0;
+    sr.hwAnchor = 0;
+    sr.srnicSeqHigh = 0;
+    // hwBitMap is allocated lazily once K is known
 }
 
 uint32_t

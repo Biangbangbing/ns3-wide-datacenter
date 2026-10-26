@@ -191,7 +191,9 @@ RdmaEgressQueue::GetNextQindex(bool paused[])
             {
                 uint32_t idx = (qIndex + m_rrlast) % fcount; // start from where we left last time
                 Ptr<RdmaQueuePair> qp = m_qpGrp->Get(idx);
-                if (!paused[qp->m_pg] && qp->GetBytesLeft() > 0 && !qp->IsWinBound()) // && qp->ShouldSendPacketForSR()
+                if (!paused[qp->m_pg] &&
+                    (qp->HasRetransPending() ||
+                     (qp->GetBytesLeft() > 0 && !qp->IsWinBound())))
                 { // not paused, not empty, not win bound
                     if (m_qpGrp->Get(idx)->m_nextAvail.GetTimeStep() >
                         Simulator::Now().GetTimeStep())
@@ -514,7 +516,7 @@ QbbNetDevice::DequeueAndTransmit(void)
             for (uint32_t i = 0; i < m_rdmaEQ->GetFlowCount(); i++)
             {
                 Ptr<RdmaQueuePair> qp = m_rdmaEQ->GetQp(i);
-                if (qp->GetBytesLeft() == 0)
+                if (qp->GetBytesLeft() == 0 && !qp->HasRetransPending())
                 {
                     continue;
                 }

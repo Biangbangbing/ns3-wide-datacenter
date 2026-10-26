@@ -841,6 +841,15 @@ main(int argc, char* argv[])
 
     cmd.AddValue("incast", "incast", incast);
 
+    uint32_t srMode = 1;     // 0=Legacy, 1=RaLL, 2=SRNIC, 3=IRN
+    uint32_t srK    = 64;
+    uint64_t srnicAsyncNs = 1000;
+    uint64_t rallAsyncNs  = 500;
+    cmd.AddValue("srMode", "SR algorithm: 0=Legacy 1=RaLL 2=SRNIC 3=IRN", srMode);
+    cmd.AddValue("srK", "Hardware bitmap size in packets (RaLL/IRN)", srK);
+    cmd.AddValue("srnicAsyncNs", "SRNIC async sw-bitmap delay (ns)", srnicAsyncNs);
+    cmd.AddValue("rallAsyncNs",  "RaLL-scheme async sw-bitmap delay (ns)", rallAsyncNs);
+
     cmd.Parse(argc, argv);
 
     SPINE_LEAF_CAPACITY = SPINE_LEAF_CAPACITY * LINK_CAPACITY_BASE;
@@ -1654,6 +1663,10 @@ main(int argc, char* argv[])
             rdmaHw->SetAttribute("RttQcnBeta", DoubleValue(RttQcnBeta));
             rdmaHw->SetAttribute("TimelyPatchedRttRef", UintegerValue(Ptmly_RttRef));
             rdmaHw->SetAttribute("TimelyPatchedBeta", DoubleValue(Ptmly_Beta));
+            rdmaHw->SetAttribute("SrMode", UintegerValue(srMode));
+            rdmaHw->SetAttribute("SrHwBitmapSize", UintegerValue(srK));
+            rdmaHw->SetAttribute("SrnicAsyncNs", UintegerValue(srnicAsyncNs));
+            rdmaHw->SetAttribute("RallAsyncNs", UintegerValue(rallAsyncNs));
             rdmaHw->SetPintSmplThresh(pint_prob);
             // create and install RdmaDriver
             Ptr<RdmaDriver> rdma = CreateObject<RdmaDriver>();

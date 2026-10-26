@@ -49,6 +49,12 @@ class qbbHeader : public Header
     void SetSwiftEndDelay(uint64_t t4);
     // Set swift sending time t_sent (t1)
     void SetSwiftSentTime(uint64_t t1);
+    // Selective Retransmit: receiver's current ReceiverNextExpectedSeq.
+    // Carried on every ACK/SACK so the sender can fast-forward its bitmap
+    // and snd_una whenever the receiver's ePSN has advanced past what the
+    // bare seq field implies (e.g. when a hole-fill walked through the
+    // hwBitMap and pushed ePSN through compressed regions).
+    void SetEpsn(uint32_t epsn);
 
     // Getters
     /**
@@ -61,6 +67,7 @@ class qbbHeader : public Header
     uint16_t GetDport() const;
     uint64_t GetTs() const;
     uint8_t GetCnp() const;
+    uint32_t GetEpsn() const;
 
     static TypeId GetTypeId(void);
     TypeId GetInstanceTypeId(void) const override;
@@ -75,6 +82,7 @@ class qbbHeader : public Header
     uint16_t flags;
     uint16_t m_pg;
     uint32_t m_seq; // the qbb sequence number.
+    uint32_t m_epsn; // SR: receiver's current ePSN at ack/sack time.
     IntHeader ih;
 };
 

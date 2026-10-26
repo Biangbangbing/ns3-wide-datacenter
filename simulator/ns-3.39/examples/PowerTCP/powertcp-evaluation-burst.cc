@@ -603,6 +603,23 @@ main(int argc, char* argv[])
                  algorithm);
     cmd.AddValue("windowCheck", "windowCheck", windowCheck);
 
+    uint32_t srMode = 1;     // 0=Legacy, 1=RaLL, 2=SRNIC, 3=IRN
+    uint32_t srK    = 64;    // hardware bitmap size (in packets)
+    uint64_t srnicAsyncNs = 1000;
+    uint64_t rallAsyncNs  = 500;
+    uint32_t lossModel = 0;       // 0 = independent (RateErrorModel), 1 = burst (BurstErrorModel)
+    uint32_t burstSizeMin = 2;    // BurstErrorModel: minimum burst size
+    uint32_t burstSizeMax = 8;    // BurstErrorModel: maximum burst size
+    cmd.AddValue("srMode", "Selective-retransmission algorithm: 0=Legacy 1=RaLL 2=SRNIC 3=IRN", srMode);
+    cmd.AddValue("srK", "Hardware bitmap size in packets (RaLL/IRN)", srK);
+    cmd.AddValue("srnicAsyncNs", "SRNIC async sw-bitmap delay (ns)", srnicAsyncNs);
+    cmd.AddValue("rallAsyncNs",  "RaLL-scheme async sw-bitmap delay (ns)", rallAsyncNs);
+    cmd.AddValue("lossModel", "0=independent per-pkt, 1=burst", lossModel);
+    cmd.AddValue("burstSizeMin", "Min burst size (packets) when lossModel=1", burstSizeMin);
+    cmd.AddValue("burstSizeMax", "Max burst size (packets) when lossModel=1", burstSizeMax);
+    std::string fctOutOverride = "";
+    cmd.AddValue("fctOut", "Override FCT_OUTPUT_FILE for parallel runs", fctOutOverride);
+
     cmd.Parse(argc, argv);
     conf.open(confFile.c_str());
     while (!conf.eof())
@@ -813,6 +830,7 @@ main(int argc, char* argv[])
         else if (key == "FCT_OUTPUT_FILE")
         {
             conf >> fct_output_file;
+            if (!fctOutOverride.empty()) fct_output_file = fctOutOverride;
             std::cout << "FCT_OUTPUT_FILE\t\t" << fct_output_file << '\n';
         }
         else if (key == "HAS_WIN")
@@ -1213,6 +1231,20 @@ main(int argc, char* argv[])
     rem->SetAttribute("ErrorRate", DoubleValue(error_rate_per_link));
     rem->SetAttribute("ErrorUnit", StringValue("ERROR_UNIT_PACKET"));
 
+    // Optional burst loss model used as the global default when lossModel=1
+    Ptr<BurstErrorModel> bemGlobal = CreateObject<BurstErrorModel>();
+    {
+        Ptr<UniformRandomVariable> uvb = CreateObject<UniformRandomVariable>();
+        uvb->SetAttribute("Min", DoubleValue(0.0));
+        uvb->SetAttribute("Max", DoubleValue(1.0));
+        Ptr<UniformRandomVariable> uvs = CreateObject<UniformRandomVariable>();
+        uvs->SetAttribute("Min", DoubleValue(burstSizeMin));
+        uvs->SetAttribute("Max", DoubleValue(burstSizeMax));
+        bemGlobal->SetAttribute("ErrorRate", DoubleValue(error_rate_per_link));
+        bemGlobal->SetAttribute("BurstStart", PointerValue(uvb));
+        bemGlobal->SetAttribute("BurstSize",  PointerValue(uvs));
+    }
+
     FILE* pfc_file = fopen(pfc_output_file.c_str(), "w");
 
     QbbHelper qbb;
@@ -1235,17 +1267,39 @@ main(int argc, char* argv[])
         qbb.SetChannelAttribute("Delay", StringValue(link_delay));
         if (error_rate > 0)
         {
-            Ptr<RateErrorModel> rem = CreateObject<RateErrorModel>();
-            Ptr<UniformRandomVariable> uv = CreateObject<UniformRandomVariable>();
-            rem->SetRandomVariable(uv);
-            uv->SetStream(50);
-            rem->SetAttribute("ErrorRate", DoubleValue(error_rate));
-            rem->SetAttribute("ErrorUnit", StringValue("ERROR_UNIT_PACKET"));
-            qbb.SetDeviceAttribute("ReceiveErrorModel", PointerValue(rem));
+            if (lossModel == 1)
+            {
+                // Burst error model: when a "burst event" fires, drop N consecutive packets
+                Ptr<BurstErrorModel> bem = CreateObject<BurstErrorModel>();
+                Ptr<UniformRandomVariable> uvb = CreateObject<UniformRandomVariable>();
+                uvb->SetAttribute("Min", DoubleValue(0.0));
+                uvb->SetAttribute("Max", DoubleValue(1.0));
+                Ptr<UniformRandomVariable> uvs = CreateObject<UniformRandomVariable>();
+                uvs->SetAttribute("Min", DoubleValue(burstSizeMin));
+                uvs->SetAttribute("Max", DoubleValue(burstSizeMax));
+                bem->SetAttribute("ErrorRate", DoubleValue(error_rate));
+                bem->SetAttribute("BurstStart", PointerValue(uvb));
+                bem->SetAttribute("BurstSize",  PointerValue(uvs));
+                qbb.SetDeviceAttribute("ReceiveErrorModel", PointerValue(bem));
+            }
+            else
+            {
+                Ptr<RateErrorModel> rem = CreateObject<RateErrorModel>();
+                Ptr<UniformRandomVariable> uv = CreateObject<UniformRandomVariable>();
+                rem->SetRandomVariable(uv);
+                uv->SetStream(50);
+                rem->SetAttribute("ErrorRate", DoubleValue(error_rate));
+                rem->SetAttribute("ErrorUnit", StringValue("ERROR_UNIT_PACKET"));
+                qbb.SetDeviceAttribute("ReceiveErrorModel", PointerValue(rem));
+            }
         }
         else
         {
-            qbb.SetDeviceAttribute("ReceiveErrorModel", PointerValue(rem));
+            // Use the global default error model (independent or burst)
+            if (lossModel == 1)
+                qbb.SetDeviceAttribute("ReceiveErrorModel", PointerValue(bemGlobal));
+            else
+                qbb.SetDeviceAttribute("ReceiveErrorModel", PointerValue(rem));
         }
 
         fflush(stdout);
@@ -1414,6 +1468,10 @@ main(int argc, char* argv[])
             rdmaHw->SetAttribute("RttQcnBeta", DoubleValue(RttQcnBeta));
             rdmaHw->SetAttribute("TimelyPatchedRttRef", UintegerValue(Ptmly_RttRef));
             rdmaHw->SetAttribute("TimelyPatchedBeta", DoubleValue(Ptmly_Beta));
+            rdmaHw->SetAttribute("SrMode", UintegerValue(srMode));
+            rdmaHw->SetAttribute("SrHwBitmapSize", UintegerValue(srK));
+            rdmaHw->SetAttribute("SrnicAsyncNs", UintegerValue(srnicAsyncNs));
+            rdmaHw->SetAttribute("RallAsyncNs", UintegerValue(rallAsyncNs));
             rdmaHw->SetPintSmplThresh(pint_prob);
             // create and install RdmaDriver
             Ptr<RdmaDriver> rdma = CreateObject<RdmaDriver>();
@@ -1544,6 +1602,61 @@ main(int argc, char* argv[])
     NS_LOG_INFO("Run Simulation.");
     Simulator::Stop(Seconds(simulator_stop_time));
     Simulator::Run();
+
+    // Dump unfinished QPs (RaLL stuck-flow diagnostic)
+    {
+        FILE* fdbg = fopen("examples/PowerTCP/mix/stuck_qps.txt", "w");
+        if (fdbg)
+        {
+            fprintf(fdbg,
+                    "src dst sport size snd_una snd_nxt sackHigh hwAnchor "
+                    "soft_eACK SendOOO retransQ swSize hwOnes "
+                    "firstSwHole(off,psn) swSetCnt swPending lastAckMs rtoRunning\n");
+            for (int i = 0; i < (int)n.GetN(); i++)
+            {
+                if (n.Get(i)->GetNodeType() != 0) continue; // only hosts
+                Ptr<RdmaDriver> drv = n.Get(i)->GetObject<RdmaDriver>();
+                if (!drv) continue;
+                for (auto& kv : drv->m_rdma->m_qpMap)
+                {
+                    Ptr<RdmaQueuePair> q = kv.second;
+                    if (q->IsFinished()) continue;
+                    uint32_t hwOnes = 0;
+                    for (auto v : q->sr.hwBitMap) if (v) hwOnes++;
+                    int firstHole = -1;
+                    uint32_t firstHolePsn = 0;
+                    uint32_t swSetCnt = 0;
+                    for (size_t j = 0; j < q->sr.swBitMap.size(); j++)
+                    {
+                        if (q->sr.swBitMap[j]) swSetCnt++;
+                        else if (firstHole < 0)
+                        {
+                            firstHole = (int)j;
+                            uint32_t swAnchor = q->sr.swPending
+                                ? q->sr.hwAnchor : q->sr.soft_eACK;
+                            firstHolePsn = swAnchor + (uint32_t)j * 1000;
+                        }
+                    }
+                    int64_t lastAckMs =
+                        (Simulator::Now() - q->sr.lastAckTime).GetMicroSeconds();
+                    fprintf(fdbg,
+                            "%u %u %u %lu %lu %lu %u %u %u %d %zu %zu %u %d %u %u %d %ld %d\n",
+                            q->sip.Get(), q->dip.Get(), q->sport, q->m_size,
+                            q->snd_una, q->snd_nxt, q->sr.sackHigh,
+                            q->sr.hwAnchor, q->sr.soft_eACK,
+                            q->sr.SendOutOfOrder ? 1 : 0,
+                            q->sr.retransQueue.size(),
+                            q->sr.swBitMap.size(),
+                            hwOnes, firstHole, firstHolePsn, swSetCnt,
+                            q->sr.swPending ? 1 : 0,
+                            lastAckMs,
+                            q->sr.rtoTimer.IsRunning() ? 1 : 0);
+                }
+            }
+            fclose(fdbg);
+        }
+    }
+
     Simulator::Destroy();
     NS_LOG_INFO("Done.");
     endt = clock();

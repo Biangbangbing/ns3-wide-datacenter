@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <vector>
+#include <set>
 // vamsi
 #include <map>
 
@@ -174,6 +175,65 @@ class RdmaQueuePair : public Object
 
     } test;
 
+    /*
+     * Selective Retransmission - sender-side state.
+     * - hwBitMap: hardware bitmap of K bits (indexed by (PSN-eACK)/MTU)
+     * - swBitMap: software bitmap (variable size, anchored at soft_eACK)
+     * - SendOutOfOrder: true when the sender has detected loss and is in SR mode
+     * - sackHigh: highest acked PSN seen (acts as receiveHigh on rx side)
+     * - soft_eACK: software-side first hole; lives ahead of (eACK + K)
+     * - eACK is encoded by snd_una/MTU; PSN is byte offset measured in MTU units.
+     * - sendLeft / sendRight: tracker bounds used while waiting for sw update
+     * - swPending: true if a software request is in-flight
+     * - retransQueue: PSNs (byte units) flagged as lost and waiting for resend
+     */
+    struct
+    {
+        bool        SendOutOfOrder;
+        std::vector<int> hwBitMap;   // size K once initialized
+        std::vector<int> swBitMap;   // dynamic size
+        uint32_t    sackHigh;
+        uint32_t    soft_eACK;       // first hole as seen by software
+        uint32_t    sendLeft;
+        uint32_t    sendRight;
+        bool        swPending;       // a soft update has been requested
+        // Physical anchor PSN of hwBitMap[0]. Equals snd_una when no sw update
+        // is in flight; frozen at the snd_una value at the moment swPending
+        // was set, so that the merge in SrTxApplySwUpdate can align swBitMap
+        // and hwBitMap regardless of intervening eACK advances.
+        uint32_t    hwAnchor;
+        std::vector<uint32_t> retransQueue; // PSNs to retransmit (in byte units)
+        // Async-ingest queue: PSNs received from sack/ack while sw is busy.
+        // Drained when SrTxApplySwUpdate runs.
+        std::vector<uint32_t> swPendingQueue;
+        uint64_t    swDeadlineNs;    // earliest time the sw update will land
+        // FACK-style accounting: total SACKed bytes in [snd_una, snd_nxt) that
+        // have been individually acknowledged (hwBitMap=1, RaLL compressed
+        // range, or swBitMap=1). Subtracted from OnTheFly in IsWinBound so
+        // cwnd doesn't double-count packets the receiver already has.
+        uint64_t    sackedBytes;
+        // RTO (retransmission timeout) for FACK. Without this, a retrans that
+        // is itself dropped is never retried (no event re-enqueues it). The
+        // timer fires 2*baseRTT after the last ACK/SACK; on a true timeout it
+        // rescans [snd_una, snd_nxt) for unacked PSNs and pushes them to
+        // retransQueue. Tail-loss of the final packet (no later send to
+        // trigger a SACK) also relies on this.
+        Time     lastAckTime;
+        EventId  rtoTimer;
+        // Fast-retransmit throttle: snd_una and time of the last fast-retrans
+        // push so that bursts of SACKs for the same hole don't enqueue
+        // duplicates.
+        uint32_t lastFastRetransPsn;
+        Time     lastFastRetransTime;
+        // SRNIC-only: set of PSNs already popped from retransQueue and sent
+        // on the wire, awaiting receiver confirmation. Without this tracker,
+        // every fresh SACK triggers a full bitmap scan that re-pushes any
+        // PSN whose retransmit hasn't yet been ACKed (bit still 0). Cleared
+        // by SrnicTxApplyOoO when the matching SACK arrives, and by
+        // SrnicTxHandleAck when snd_una advances past the entry.
+        std::set<uint32_t> srnicInflightRetx;
+    } sr;
+
     /***********
      * methods
      **********/
@@ -206,6 +266,8 @@ class RdmaQueuePair : public Object
 
     //
     bool ShouldSendPacketForSR() const;
+    // True iff there are queued retransmissions waiting to be drained.
+    bool HasRetransPending() const;
     // Generates a hash value based on the queue pair's source and destination IP addresses and
     // ports,
     // likely used for efficiently looking up queue pairs.
@@ -263,6 +325,44 @@ class RdmaRxQueuePair : public Object
         std::vector<int> bitMap;
 
     } test;
+
+    /*
+     * Selective Retransmission - receiver-side state.
+     * - hwBitMap: hardware bitmap of K bits anchored at ePSN.
+     *   bit i represents the packet with PSN = ePSN + i*MTU.
+     * - swBitMap: software bitmap (variable size, anchored at soft_ePSN).
+     * - ReceiveOutOfOrder: true once a hole appears.
+     * - receiveHigh: highest received PSN.
+     * - soft_ePSN: first hole as seen by software (ePSN <= soft_ePSN <= ...).
+     * - recvLeft / recvRight: tracker bounds used while waiting for sw update.
+     * - swPending: true while a sw update request is pending.
+     */
+    struct
+    {
+        bool ReceiveOutOfOrder;
+        std::vector<int> hwBitMap;   // size K once initialized
+        std::vector<int> swBitMap;   // dynamic size
+        uint32_t receiveHigh;
+        uint32_t soft_ePSN;          // first hole as seen by software
+        uint32_t recvLeft;
+        uint32_t recvRight;
+        bool     swPending;
+        // Physical anchor PSN of hwBitMap[0]. Equals ePSN when no sw update
+        // is in flight; frozen at the ePSN value at the moment swPending was
+        // set, so that the merge in SrRxApplySwUpdate can align swBitMap and
+        // hwBitMap regardless of intervening ePSN advances.
+        uint32_t hwAnchor;
+        // Async-ingest queue (used while a sw update is in-flight)
+        std::vector<uint32_t> swPendingQueue;
+        uint64_t swDeadlineNs;       // earliest time the sw update will land
+        // SRNIC fast-exit tracker (Fig 8). Highest PSN P such that we have
+        // synchronously observed PSNs ePSN+1, ePSN+2, ..., P arrive (in any
+        // order). Updated in the OOO branch of SrnicRxHandlePacket so it is
+        // immune to swBitMap async lag. On the in-order transition the
+        // receiver leaps ePSN past the entire run instead of waiting for
+        // each ApplyOoO to fire incrementally.
+        uint32_t srnicSeqHigh;
+    } sr;
 
     ECNAccount m_ecn_source;
     uint32_t sip, dip;

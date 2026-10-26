@@ -95,7 +95,7 @@ class RdmaHw : public Object
                          // Only NIC can call this function. And do not call this upon PFC
 
     void CheckandSendQCN(Ptr<RdmaRxQueuePair> q);
-    int ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size) const;
+    int ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size);
     void AddHeader(Ptr<Packet> p, uint16_t protocolNumber);
     static uint16_t EtherToPpp(uint16_t protocol);
 
@@ -246,8 +246,95 @@ class RdmaHw : public Object
     /*********************
      * SR
      ********************/
+    uint32_t m_srK;            // hardware bitmap size (in bits / packets)
+    bool     m_srEnabled;      // master switch for new SR mechanism
+    uint32_t m_srMode;         // 0=Legacy, 1=RaLL (default), 2=SRNIC, 3=IRN, 4=CX6/GBN
+    uint64_t m_srnicAsyncNs;   // SRNIC sw bitmap async delay (ns)
+    uint64_t m_rallAsyncNs;    // RaLL sw bitmap async delay (ns)
+
     void updateSendNxt(Ptr<RdmaQueuePair> qp,uint64_t payload_size);
     void HandleAckForSR(Ptr<RdmaQueuePair> qp,uint32_t seq,CustomHeader& ch);
+
+    // SR helpers (receiver side) - RaLL
+    void   SrInitRxIfNeeded(Ptr<RdmaRxQueuePair> q);
+    void   SrRxHandlePacket(Ptr<RdmaRxQueuePair> q, uint32_t seq);
+    void   SrRxRequestSwUpdate(Ptr<RdmaRxQueuePair> q);
+    void   SrRxAdvanceEPSN(Ptr<RdmaRxQueuePair> q);
+    void   SrRxApplySwUpdate(Ptr<RdmaRxQueuePair> q);
+
+    // SR helpers (sender side) - RaLL
+    void   SrInitTxIfNeeded(Ptr<RdmaQueuePair> qp);
+    void   SrTxHandleAck (Ptr<RdmaQueuePair> qp, uint32_t seq);
+    void   SrTxHandleSack(Ptr<RdmaQueuePair> qp, uint32_t seq, uint32_t expectedPSN);
+    void   SrTxRequestSwUpdate(Ptr<RdmaQueuePair> qp);
+    void   SrTxAdvanceEACK(Ptr<RdmaQueuePair> qp);
+    void   SrTxApplySwUpdate(Ptr<RdmaQueuePair> qp);
+    // FACK accounting: walk hwBitMap + RaLL compressed range + swBitMap and
+    // store the total SACKed bytes in qp->sr.sackedBytes. Called after every
+    // bitmap mutation so IsWinBound can subtract it from OnTheFly.
+    void   SrTxRecomputeSackedBytes(Ptr<RdmaQueuePair> qp);
+
+    // RTO support for FACK. SrTxArmRTO (re)schedules the per-QP timer to fire
+    // 2*baseRTT later. SrTxOnRTOFire is the callback: if no ACK/SACK has
+    // arrived in that window, scan [snd_una, snd_nxt) and re-enqueue any PSNs
+    // not yet individually SACKed (handles second-time loss + tail loss).
+    void   SrTxArmRTO(Ptr<RdmaQueuePair> qp);
+    void   SrTxOnRTOFire(Ptr<RdmaQueuePair> qp);
+    bool   SrTxIsPsnAcked(Ptr<RdmaQueuePair> qp, uint32_t psn);
+    // Fast-sync sender state from a SACK/ACK-carried receiver ePSN.
+    // Called when the receiver reports an ePSN > sender's snd_una. Three
+    // cases:
+    //   (1) epsn within hw window: fill bits in [snd_una, epsn) of hwBitMap
+    //       and let SrTxAdvanceEACK walk + promote like a normal cumulative
+    //       ACK reaching epsn.
+    //   (2) epsn within compressed range [hwLimit, soft_eACK): K-window is
+    //       implicitly all received; fill all K bits, walk → promote.
+    //   (3) epsn > soft_eACK: hardware "jump-ahead" promote — slide hwAnchor
+    //       to epsn, soft_eACK to epsn+K*MTU, copy [epsn, epsn+K*MTU) bits
+    //       from swBitMap into the new hwBitMap, trim swBitMap below the new
+    //       soft_eACK, then keep extending newSoft past any leading 1s.
+    void   SrTxFastSyncFromEpsn(Ptr<RdmaQueuePair> qp, uint32_t epsn);
+
+    // IRN bitmap helpers (single dynamic bitmap, per-packet SACK)
+    void   IrnRxHandlePacket(Ptr<RdmaRxQueuePair> q, uint32_t seq);
+    void   IrnTxHandleAck (Ptr<RdmaQueuePair> qp, uint32_t seq);
+    void   IrnTxHandleSack(Ptr<RdmaQueuePair> qp, uint32_t seq);
+    // Scan hwBitMap for the first 0-bit at PSN >= startPsn (and <= sackHigh).
+    // Returns the corresponding PSN, or 0 if no hole exists in that range.
+    // Mirrors the official IRN findNewHole logic: after a retransmit, scan
+    // the bitmap above the just-sent PSN to pick the next missing one.
+    uint32_t IrnTxFindNextHole(Ptr<RdmaQueuePair> qp, uint32_t startPsn);
+    // Ensure retransQueue contains exactly the next PSN to retransmit (or is
+    // empty if no holes exist). Called after every bitmap mutation so we
+    // never bulk-enumerate gaps the way the old design did.
+    void     IrnTxRequeueNextHole(Ptr<RdmaQueuePair> qp, uint32_t startPsn);
+
+    // SRNIC bitmap helpers (Wang et al., NSDI'23). Software bitmap in host
+    // memory; OOO packets are sent over CtrlQ (modeled as a Schedule() delay
+    // of m_srnicAsyncNs) to "software" where the bitmap is updated and the
+    // retransmit decision is taken. The requester's bitmap is the source of
+    // truth for which PSNs receiver has SACKed; RetryQ entries are derived
+    // by scanning the bitmap for 0-bits in [snd_una, sackHigh].
+    void   SrnicRxHandlePacket(Ptr<RdmaRxQueuePair> q, uint32_t seq);
+    void   SrnicTxHandleAck (Ptr<RdmaQueuePair> qp, uint32_t seq);
+    void   SrnicTxHandleSack(Ptr<RdmaQueuePair> qp, uint32_t seq);
+    void   SrnicRxApplyOoO(Ptr<RdmaRxQueuePair> q, uint32_t seq);
+    void   SrnicTxApplyOoO(Ptr<RdmaQueuePair> qp, uint32_t seq);
+    // Bitmap-driven retransmit scan: pick the first PSN >= startPsn with
+    // swBitMap[psn-snd_una] == 0 and <= sackHigh, enqueue it into RetryQ
+    // (qp->sr.retransQueue). Mirrors IrnTxRequeueNextHole / official IRN
+    // findNewHole flow. Called from SrnicTxApplyOoO after the bitmap update
+    // and from GetNxtPacket after dequeuing a retransmit, so RetryQ holds
+    // at most one PSN at a time and we never bulk-enumerate gaps.
+    void   SrnicTxRequeueNextHole(Ptr<RdmaQueuePair> qp, uint32_t startPsn);
+
+    // CX6 / classic RoCEv2 go-back-N (Mellanox ConnectX-6 retransmission model).
+    // Receiver drops any OOO packet outright and NACKs with cumulative ePSN.
+    // Sender on NACK rewinds snd_nxt back to snd_una so the forward-send path
+    // re-issues every PSN from there. No bitmap, no SACK, no selective retx.
+    void   Cx6RxHandlePacket(Ptr<RdmaRxQueuePair> q, uint32_t seq);
+    void   Cx6TxHandleAck (Ptr<RdmaQueuePair> qp, uint32_t seq);
+    void   Cx6TxHandleSack(Ptr<RdmaQueuePair> qp, uint32_t seq);
 };
 
 enum CC_MODE
